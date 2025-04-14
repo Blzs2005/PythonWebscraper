@@ -70,6 +70,7 @@ The script currently extracts *all* text from the `<body>` of each page using `s
 *   **Check `robots.txt`:** While the script has basic checks, manually review the target site's `robots.txt` file (`http://<domain>/robots.txt`) to understand their crawling policies.
 *   **Terms of Service:** Review the website's Terms of Service to ensure scraping is permitted.
 *   **Identify Yourself:** Use a descriptive User-Agent string (`--user-agent`) if desired, potentially including contact information.
+*   **Disclaimer:** The author is not responsible for any misuse of this script or for any violations of website terms of service resulting from its use. Use this script responsibly and ethically.
 
 ## License
 

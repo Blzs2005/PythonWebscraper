@@ -22,26 +22,38 @@ def can_fetch(url, user_agent):
     base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
     robots_url = urljoin(base_url, "/robots.txt")
 
-    parser = robots_parsers.get(base_url)
-    if not parser:
+    # Check cache first
+    if base_url in robots_parsers:
+        parser = robots_parsers[base_url]
+        # If parser is None, it means we tried and failed before
+        if parser is None:
+            return True # Allow fetching if robots.txt was inaccessible/unparsable previously
+        # Proceed to check rules with the cached parser
+    else:
+        # If not in cache, try to fetch and parse
         parser = robotparser.RobotFileParser()
         parser.set_url(robots_url)
         try:
             logging.info(f"  Fetching robots.txt from: {robots_url}")
             parser.read()
-            robots_parsers[base_url] = parser
+            robots_parsers[base_url] = parser # Cache the parser instance
         except Exception as e:
+            # Catch any exception during fetch/parse (network, parsing errors)
             logging.warning(f"  Could not fetch or parse robots.txt at {robots_url}: {e}")
-            robots_parsers[base_url] = None
-            return True
+            robots_parsers[base_url] = None # Cache None to indicate failure
+            return True # Allow fetching if robots.txt is inaccessible or unparsable
 
+    # If we have a valid parser (either newly fetched or from cache)
     if parser:
         try:
             return parser.can_fetch(user_agent, url)
         except Exception as e:
-            logging.warning(f"  Error checking can_fetch for {url} with robots.txt: {e}")
-            return True
+            # Catch potential errors during the can_fetch call itself
+            logging.warning(f"  Error checking can_fetch for {url} with robots.txt parser: {e}")
+            return True # Allow fetching if there's an error during the check
     else:
+        # This case should technically not be reached if None is cached,
+        # but added for robustness. It means parsing failed.
         return True
 
 def fetch_url_content(url, user_agent):
@@ -49,19 +61,28 @@ def fetch_url_content(url, user_agent):
     try:
         headers = {'User-Agent': user_agent}
         response = requests.get(url, headers=headers, timeout=15)
-        response.raise_for_status()
+        response.raise_for_status() # Raises HTTPError for bad responses (4xx or 5xx)
+
         content_type = response.headers.get('Content-Type', '')
-        if 'text/html' not in content_type:
+        if 'text/html' not in content_type.lower(): # Check lower case
             logging.info(f"  Skipping non-HTML content ({content_type}) at: {url}")
             return None
         return response.text
     except requests.exceptions.Timeout:
         logging.warning(f"  Timeout error fetching URL {url}")
         return None
+    except requests.exceptions.HTTPError as e:
+        logging.warning(f"  HTTP error fetching URL {url}: {e}")
+        return None
+    except requests.exceptions.ConnectionError as e:
+        logging.warning(f"  Connection error fetching URL {url}: {e}")
+        return None
     except requests.exceptions.RequestException as e:
+        # Catch any other requests-related errors
         logging.error(f"  Error fetching URL {url}: {e}")
         return None
     except Exception as e:
+        # Catch any other unexpected errors during the process
         logging.error(f"  An unexpected error occurred during fetch for {url}: {e}")
         return None
 

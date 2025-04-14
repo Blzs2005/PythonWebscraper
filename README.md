@@ -11,8 +11,10 @@ This Python script is a basic web scraper designed to extract text content prima
 *   **Configurable:** Allows setting the maximum number of pages to crawl, the delay between requests, the output filename, and the User-Agent string via command-line arguments.
 *   **Politeness:** Includes a configurable delay between requests to avoid overwhelming the target server.
 *   **Basic `robots.txt` Respect:** Includes a basic check for `robots.txt` rules (requires the `urllib.robotparser` module).
+*   **Link Filtering:** Attempts to ignore links pointing to common non-HTML file extensions (like PDFs, images, archives) and non-web schemes (like `mailto:`, `tel:`).
 *   **Output:** Saves the combined extracted text from all crawled pages into a single `.txt` file.
-*   **Logging:** Uses Python's `logging` module for informative output during the crawl.
+*   **Logging:** Uses Python's `logging` module for informative output during the crawl, with an optional verbose mode (`-v`).
+*   **Session Management:** Uses `requests.Session` for potentially improved performance with persistent connections.
 
 ## Requirements
 
@@ -39,8 +41,8 @@ python main.py <start_url> [options]
 # Crawl docs.example.com starting from the main page, limit to 50 pages, save to my_docs.txt
 python main.py https://docs.example.com -m 50 -o my_docs.txt
 
-# Crawl with a 2-second delay and skip the save confirmation prompt
-python main.py https://api.another-site.org/v1/ --delay 2 --skip-save-prompt
+# Crawl with a 2-second delay, skip the save confirmation prompt, and enable verbose logging
+python main.py https://api.another-site.org/v1/ --delay 2 --skip-save-prompt -v
 ```
 
 ## Configuration (Command-Line Arguments)
@@ -51,18 +53,22 @@ python main.py https://api.another-site.org/v1/ --delay 2 --skip-save-prompt
 *   `-d` or `--delay`: Delay in seconds between requests (default: 1).
 *   `-ua` or `--user-agent`: User-Agent string for requests (default: a common browser UA).
 *   `--skip-save-prompt`: Automatically save the output file without asking for confirmation.
+*   `-v` or `--verbose`: Enable debug logging for more detailed output.
 
 ## Important Note: Refining Text Extraction
 
 The script currently extracts *all* text from the `<body>` of each page using `soup.get_text()`. This often includes navigation menus, footers, sidebars, etc., which might not be relevant documentation content.
 
-**For best results, you MUST inspect the HTML structure of your target website and modify the `extract_text_from_html` function in `main.py`**. Target specific HTML elements (like `<main>`, `<article>`, `<div class="content">`, etc.) that contain the primary documentation content. Look for the `--- CRITICAL REFINEMENT AREA ---` comment in the code.
+**For best results, you MUST inspect the HTML structure of your target website and modify the `extract_text_from_html` function in `main.py`**. Target specific HTML elements (like `<main>`, `<article>`, `<div class="content">`, etc.) that contain the primary documentation content.
+
+*Performance Tip:* Consider installing the `lxml` library (`pip install lxml`) and changing the parser in `extract_text_from_html` from `'html.parser'` to `'lxml'` for potentially faster HTML parsing, especially on complex pages.
 
 ## Limitations
 
 *   **No JavaScript Rendering:** The scraper only fetches and parses the initial HTML source. It does not execute JavaScript, so content loaded dynamically might be missed.
 *   **Basic `robots.txt`:** The `robots.txt` handling is basic and relies on Python's standard library parser. Complex rules or directives might not be fully interpreted.
 *   **HTML Structure Dependent:** The quality of the extracted text heavily depends on targeting the correct HTML elements (see "Important Note" above).
+*   **Basic Link Filtering:** Filtering of non-HTML links is based on common file extensions and schemes; edge cases might be missed.
 
 ## Ethical Considerations
 

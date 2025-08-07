@@ -10,6 +10,7 @@ import logging
 import argparse
 from urllib import robotparser
 from typing import Deque, Set, List, Tuple, Optional, Dict
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -27,6 +28,15 @@ IGNORED_EXTENSIONS: Set[str] = {
 }
 
 robots_parsers: Dict[str, Optional[robotparser.RobotFileParser]] = {}
+
+@dataclass
+class CrawlConfig:
+    start_url: str
+    max_pages: int
+    delay: float
+    user_agent: str
+    output_file: Optional[str]
+    skip_save_prompt: bool
 
 def normalize_url(url: str) -> str:
     parsed = urlparse(url)
@@ -130,6 +140,9 @@ def get_safe_filename(url: str) -> str:
 def save_text_to_file(text: str, filename: str) -> bool:
     try:
         safe_filename: str = os.path.basename(filename)
+        if not safe_filename:
+            logger.error("Filename is empty or invalid.")
+            return False
         full_path: str = os.path.abspath(safe_filename)
         with open(full_path, 'w', encoding='utf-8') as f:
             f.write(text)
@@ -141,6 +154,102 @@ def save_text_to_file(text: str, filename: str) -> bool:
     except Exception as e:
         logger.error(f"An unexpected error occurred during saving to '{filename}': {e}")
         return False
+
+class Crawler:
+    def __init__(self, config: CrawlConfig):
+        self.config = config
+        self.base_domain = urlparse(config.start_url).netloc
+        self.urls_to_visit: Deque[str] = deque([config.start_url])
+        self.visited_urls: Set[str] = set()
+        self.session = self._init_session()
+
+    def _init_session(self) -> Session:
+        session = Session()
+        session.headers.update({'User-Agent': self.config.user_agent})
+        return session
+
+    def crawl(self) -> List[str]:
+        all_pages_text: List[str] = []
+        pages_crawled = 0
+
+        logger.info(f"Starting crawl from: {self.config.start_url}")
+        logger.info(f"Will stay within domain: {self.base_domain}")
+        logger.info(f"Max pages: {self.config.max_pages}, Delay: {self.config.delay}s, User-Agent: {self.config.user_agent}")
+
+        while self.urls_to_visit and pages_crawled < self.config.max_pages:
+            current_url = self.urls_to_visit.popleft()
+
+            if not self._should_visit(current_url):
+                continue
+
+            self.visited_urls.add(current_url)
+            pages_crawled += 1
+            logger.info(f"[{pages_crawled}/{self.config.max_pages}] Visiting: {current_url}")
+
+            html_content = fetch_url_content(self.session, current_url)
+
+            if html_content:
+                extracted_text, soup = extract_text_from_html(html_content)
+                if extracted_text:
+                    all_pages_text.append(extracted_text)
+                    logger.info(f"  Extracted ~{len(extracted_text)} characters.")
+
+                if soup:
+                    self._find_new_links(soup, current_url)
+
+                if self.config.delay > 0:
+                    logger.debug(f"  Waiting {self.config.delay} second(s)...")
+                    time.sleep(self.config.delay)
+            else:
+                logger.warning(f"  Failed to fetch or process content for {current_url}")
+        
+        logger.info(f"Crawl finished. Visited {len(self.visited_urls)} pages (max limit: {self.config.max_pages}).")
+        return all_pages_text
+
+    def _should_visit(self, url: str) -> bool:
+        if url in self.visited_urls:
+            return False
+
+        if not is_likely_html(url):
+            logger.debug(f"  Skipping non-HTML or non-HTTP(S) URL: {url}")
+            self.visited_urls.add(url)
+            return False
+
+        parsed_url = urlparse(url)
+        if parsed_url.netloc != self.base_domain:
+            logger.debug(f"  Skipping external link: {url}")
+            return False
+
+        if not can_fetch(url, self.config.user_agent):
+            logger.warning(f"  Skipping disallowed URL (robots.txt): {url}")
+            self.visited_urls.add(url)
+            return False
+        
+        return True
+
+    def _find_new_links(self, soup: BeautifulSoup, current_url: str) -> None:
+        links_found = 0
+        for link in soup.find_all('a', href=True):
+            href = link.get('href', '')
+            if not href or href.startswith(('mailto:', 'tel:', 'javascript:')):
+                continue
+
+            try:
+                absolute_url = urljoin(current_url, href)
+                normalized_url = normalize_url(absolute_url)
+            except ValueError as e:
+                logger.debug(f"  Could not parse or join URL '{href}' from {current_url}: {e}")
+                continue
+
+            parsed_absolute = urlparse(normalized_url)
+            if (parsed_absolute.scheme in ['http', 'https'] and
+                    parsed_absolute.netloc == self.base_domain and
+                    normalized_url not in self.visited_urls and
+                    normalized_url not in self.urls_to_visit and
+                    is_likely_html(normalized_url)):
+                self.urls_to_visit.append(normalized_url)
+                links_found += 1
+        logger.info(f"  Found {links_found} new potential HTML links.")
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Scrape text content from a website, staying within the same domain.")
@@ -168,125 +277,47 @@ def main() -> None:
     logger.debug("Debug logging enabled.")
 
     start_url: str = args.start_url
-    max_pages: int = args.max_pages
-    output_filename_arg: Optional[str] = args.output_file
-    delay: float = args.delay
-    user_agent: str = args.user_agent
-
     if not start_url.startswith(('http://', 'https://')):
         start_url = 'https://' + start_url
-
     start_url = normalize_url(start_url)
 
-    parsed_start_url = urlparse(start_url)
-    if not parsed_start_url.netloc:
-        logger.error(f"Invalid start URL provided: {start_url}")
+    if not urlparse(start_url).netloc:
+        logger.error(f"Invalid start URL provided: {args.start_url}")
         return
 
-    base_domain: str = parsed_start_url.netloc
+    config = CrawlConfig(
+        start_url=start_url,
+        max_pages=args.max_pages,
+        delay=args.delay,
+        user_agent=args.user_agent,
+        output_file=args.output_file,
+        skip_save_prompt=args.skip_save_prompt
+    )
 
-    urls_to_visit: Deque[str] = deque([start_url])
-    visited_urls: Set[str] = set()
-    all_pages_text: List[str] = []
-
-    logger.info(f"Starting crawl from: {start_url}")
-    logger.info(f"Will stay within domain: {base_domain}")
-    logger.info(f"Max pages: {max_pages}, Delay: {delay}s, User-Agent: {user_agent}")
-
-    pages_crawled: int = 0
-
-    with requests.Session() as session:
-        session.headers.update({'User-Agent': user_agent})
-
-        while urls_to_visit and pages_crawled < max_pages:
-            current_url: str = urls_to_visit.popleft()
-
-            if current_url in visited_urls:
-                continue
-
-            if not is_likely_html(current_url):
-                logger.debug(f"  Skipping non-HTML or non-HTTP(S) URL: {current_url}")
-                visited_urls.add(current_url)
-                continue
-
-            parsed_current = urlparse(current_url)
-            if parsed_current.netloc != base_domain:
-                logger.debug(f"  Skipping external link: {current_url}")
-                continue
-
-            if not can_fetch(current_url, user_agent):
-                logger.warning(f"  Skipping disallowed URL (robots.txt): {current_url}")
-                visited_urls.add(current_url)
-                continue
-
-            visited_urls.add(current_url)
-            pages_crawled += 1
-            logger.info(f"[{pages_crawled}/{max_pages}] Visiting: {current_url}")
-
-            html_content: Optional[str] = fetch_url_content(session, current_url)
-
-            if html_content:
-                extracted_text: str
-                soup: Optional[BeautifulSoup]
-                extracted_text, soup = extract_text_from_html(html_content)
-                if extracted_text:
-                    all_pages_text.append(extracted_text)
-                    logger.info(f"  Extracted ~{len(extracted_text)} characters.")
-
-                if soup:
-                    links_found: int = 0
-                    for link in soup.find_all('a', href=True):
-                        href: str = link.get('href', '')
-                        if not href:
-                            continue
-
-                        if href.startswith(('mailto:', 'tel:', 'javascript:')):
-                            logger.debug(f"  Skipping non-web link: {href}")
-                            continue
-
-                        try:
-                            absolute_url: str = urljoin(current_url, href)
-                            normalized_absolute_url: str = normalize_url(absolute_url)
-                        except ValueError as e:
-                            logger.debug(f"  Could not parse or join URL '{href}' from {current_url}: {e}")
-                            continue
-
-                        parsed_absolute = urlparse(normalized_absolute_url)
-
-                        if parsed_absolute.scheme in ['http', 'https'] and \
-                           parsed_absolute.netloc == base_domain and \
-                           normalized_absolute_url not in visited_urls and \
-                           normalized_absolute_url not in urls_to_visit and \
-                           is_likely_html(normalized_absolute_url):
-                            urls_to_visit.append(normalized_absolute_url)
-                            links_found += 1
-                    logger.info(f"  Found {links_found} new potential HTML links.")
-
-                if delay > 0:
-                    logger.debug(f"  Waiting {delay} second(s)...")
-                    time.sleep(delay)
-            else:
-                logger.warning(f"  Failed to fetch or process content for {current_url}")
-
-    logger.info(f"Crawl finished. Visited {len(visited_urls)} pages (max limit: {max_pages}).")
+    crawler = Crawler(config)
+    all_pages_text = crawler.crawl()
 
     if all_pages_text:
         full_extracted_text: str = "\n\n--- Page Break ---\n\n".join(all_pages_text)
         logger.info(f"Total extracted text length: {len(full_extracted_text)} characters.")
 
         output_filename: str
-        if output_filename_arg:
-            output_filename = output_filename_arg
+        if config.output_file:
+            output_filename = config.output_file
         else:
-            output_filename = get_safe_filename(start_url)
+            output_filename = get_safe_filename(config.start_url)
 
         do_save: bool = False
-        if args.skip_save_prompt:
+        if config.skip_save_prompt:
             do_save = True
         else:
-            save_output: str = input(f"Save the combined text to '{output_filename}'? (y/N): ").strip().lower()
-            if save_output.startswith('y'):
-                do_save = True
+            try:
+                save_output: str = input(f"Save the combined text to '{output_filename}'? (y/N): ").strip().lower()
+                if save_output.startswith('y'):
+                    do_save = True
+            except (EOFError, KeyboardInterrupt):
+                logger.info("\nSkipping file save due to user interruption.")
+                do_save = False
 
         if do_save:
             save_text_to_file(full_extracted_text, output_filename)

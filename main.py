@@ -9,7 +9,7 @@ def _ensure_requirements() -> None:
     if not os.path.isfile(req_file):
         return
     import_aliases = {"beautifulsoup4": "bs4"}
-    missing = []
+    missing: list[str] = []
     with open(req_file, encoding="utf-8") as f:
         for line in f:
             pkg = line.strip().split("#", 1)[0].strip()
@@ -351,7 +351,10 @@ class Crawler:
         added = 0
         next_depth = current_depth + 1
         for link in soup.find_all('a', href=True):
-            href = link.get('href', '').strip()
+            href_attr = link.get('href')
+            if not isinstance(href_attr, str):
+                continue
+            href = href_attr.strip()
             if not href or href.startswith(('mailto:', 'tel:', 'javascript:', '#')):
                 continue
             try:
